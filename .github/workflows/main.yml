@@ -1,11 +1,15 @@
-name: FastReport .NET 8/9 build
+name: CI Build (FastReport .NET 8/9)
 
 on:
   push:
     branches: [ "main", "develop" ]
   pull_request:
     branches: [ "main" ]
- workflow_dispatch:
+
+  # =========================
+  # Manual trigger (GitHub UI)
+  # =========================
+  workflow_dispatch:
     inputs:
       configuration:
         description: "Build configuration"
@@ -28,10 +32,8 @@ on:
         default: ""
         type: string
 
-
-
 env:
-  CONFIGURATION: Release
+  CONFIGURATION: ${{ inputs.configuration || 'Release' }}
 
 jobs:
   build-test:
@@ -44,61 +46,43 @@ jobs:
         dotnet: [ "8.0.x", "9.0.x" ]
 
     steps:
-      # =========================
-      # Checkout source
-      # =========================
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # =========================
-      # Setup .NET SDK (matrix)
+      # Conditional SDK selection
+      # (manual override supported)
       # =========================
-      - name: Setup .NET SDK ${{ matrix.dotnet }}
+      - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ matrix.dotnet }}
+          dotnet-version: ${{ inputs.dotnet_version != '' && inputs.dotnet_version || matrix.dotnet }}
 
-      # =========================
-      # Show environment (debug-friendly)
-      # =========================
       - name: Show .NET info
         run: dotnet --info
 
-      # =========================
-      # Install Windows desktop workloads
-      # (required for WinForms/WPF FastReport modules)
-      # =========================
       - name: Install workloads
-        run: |
-          dotnet workload install windowsdesktop
+        run: dotnet workload install windowsdesktop
 
-      # =========================
-      # NuGet caching (fast CI)
-      # =========================
-      - name: Cache NuGet packages
+      - name: Cache NuGet
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ matrix.dotnet }}-${{ hashFiles('**/*.csproj', '**/packages.lock.json') }}
           restore-keys: |
-            nuget-${{ runner.os }}-${{ matrix.dotnet }}-
+            nuget-${{ runner.os }}-
 
-      # =========================
-      # Restore dependencies
-      # =========================
-      - name: Restore dependencies
+      - name: Restore
         run: dotnet restore --locked-mode
 
-      # =========================
-      # Build solution
-      # =========================
       - name: Build solution
         run: dotnet build FastReport.sln -c ${{ env.CONFIGURATION }} --no-restore
 
       # =========================
-      # Run unit tests
+      # Optional test execution
       # =========================
       - name: Run tests
+        if: ${{ inputs.run_tests }}
         run: |
           dotnet test FastReport.sln ^
             -c ${{ env.CONFIGURATION }} ^
@@ -106,47 +90,34 @@ jobs:
             --logger "trx;LogFileName=test-results.trx" ^
             --results-directory ./TestResults
 
-      # =========================
-      # Upload test results (always)
-      # =========================
       - name: Upload test results
-        if: always()
+        if: always() && inputs.run_tests
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ matrix.dotnet }}
           path: TestResults
 
-      # =========================
-      # Publish artifacts (DLLs / packages)
-      # =========================
-      - name: Publish build artifacts
+      - name: Publish artifacts
         run: |
           dotnet publish FastReport/FastReport.csproj ^
             -c ${{ env.CONFIGURATION }} ^
             -o ./publish/net${{ matrix.dotnet }}
 
-      # =========================
-      # Upload compiled output
-      # =========================
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: fastreport-${{ matrix.dotnet }}
           path: publish/net${{ matrix.dotnet }}
 
-  # ==========================================
-  # OPTIONAL: Packaging job (NuGet output)
-  # ==========================================
   pack:
-    name: Pack NuGet (net9)
+    name: Pack NuGet (manual-safe)
     runs-on: windows-latest
     needs: build-test
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup .NET
+      - name: Setup .NET 9
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "9.0.x"
@@ -154,14 +125,14 @@ jobs:
       - name: Restore
         run: dotnet restore
 
-      - name: Pack NuGet packages
+      - name: Pack
         run: |
           dotnet pack FastReport.sln ^
             -c Release ^
             -o ./nupkgs ^
             --no-build
 
-      - name: Upload NuGet packages
+      - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
           name: nuget-packages
