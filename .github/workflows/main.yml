@@ -1,0 +1,144 @@
+name: FastReport .NET 8/9 build
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CONFIGURATION: Release
+
+jobs:
+  build-test:
+    name: Build & Test (.NET ${{ matrix.dotnet }})
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        dotnet: [ "8.0.x", "9.0.x" ]
+
+    steps:
+      # =========================
+      # Checkout source
+      # =========================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # =========================
+      # Setup .NET SDK (matrix)
+      # =========================
+      - name: Setup .NET SDK ${{ matrix.dotnet }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ matrix.dotnet }}
+
+      # =========================
+      # Show environment (debug-friendly)
+      # =========================
+      - name: Show .NET info
+        run: dotnet --info
+
+      # =========================
+      # Install Windows desktop workloads
+      # (required for WinForms/WPF FastReport modules)
+      # =========================
+      - name: Install workloads
+        run: |
+          dotnet workload install windowsdesktop
+
+      # =========================
+      # NuGet caching (fast CI)
+      # =========================
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ matrix.dotnet }}-${{ hashFiles('**/*.csproj', '**/packages.lock.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-${{ matrix.dotnet }}-
+
+      # =========================
+      # Restore dependencies
+      # =========================
+      - name: Restore dependencies
+        run: dotnet restore --locked-mode
+
+      # =========================
+      # Build solution
+      # =========================
+      - name: Build solution
+        run: dotnet build FastReport.sln -c ${{ env.CONFIGURATION }} --no-restore
+
+      # =========================
+      # Run unit tests
+      # =========================
+      - name: Run tests
+        run: |
+          dotnet test FastReport.sln ^
+            -c ${{ env.CONFIGURATION }} ^
+            --no-build ^
+            --logger "trx;LogFileName=test-results.trx" ^
+            --results-directory ./TestResults
+
+      # =========================
+      # Upload test results (always)
+      # =========================
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.dotnet }}
+          path: TestResults
+
+      # =========================
+      # Publish artifacts (DLLs / packages)
+      # =========================
+      - name: Publish build artifacts
+        run: |
+          dotnet publish FastReport/FastReport.csproj ^
+            -c ${{ env.CONFIGURATION }} ^
+            -o ./publish/net${{ matrix.dotnet }}
+
+      # =========================
+      # Upload compiled output
+      # =========================
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastreport-${{ matrix.dotnet }}
+          path: publish/net${{ matrix.dotnet }}
+
+  # ==========================================
+  # OPTIONAL: Packaging job (NuGet output)
+  # ==========================================
+  pack:
+    name: Pack NuGet (net9)
+    runs-on: windows-latest
+    needs: build-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Pack NuGet packages
+        run: |
+          dotnet pack FastReport.sln ^
+            -c Release ^
+            -o ./nupkgs ^
+            --no-build
+
+      - name: Upload NuGet packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: nupkgs
